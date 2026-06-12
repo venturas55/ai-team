@@ -24,13 +24,19 @@ def save_state(state):
 def parse_json(text: str):
     try:
         # elimina code fences si existen
-        text = re.sub(r"```json|```", "", text)
+        text = re.sub(r"```json|```", "", text, flags=re.IGNORECASE).strip()
 
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if not match:
+        matches = re.findall(r"\{[\s\S]*?\}", text)
+        if not matches:
             return None
 
-        return json.loads(match.group(0))
+        for candidate in sorted(matches, key=len, reverse=True):
+            try:
+                return json.loads(candidate)
+            except Exception:
+                continue
+
+        return None
 
     except Exception:
         return None
