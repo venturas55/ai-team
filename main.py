@@ -1,69 +1,199 @@
 import asyncio
 import json
-
-from autogen_agentchat.teams import RoundRobinGroupChat
-from autogen_agentchat.conditions import MaxMessageTermination
+import re
 
 from team import pm, architect, developer, qa
 from executor import apply_dev_output
 
+STATE_FILE = "project_state.json"
 
-team = RoundRobinGroupChat(
-    participants=[pm, architect, developer, qa],
-    termination_condition=MaxMessageTermination(12)
-)
+# =========================
+# LOAD STATE
+# =========================
+def load_state():
+    with open(STATE_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
 
-task = "Crea una app que convierte imágenes JPG a ASCII"
+def save_state(state):
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(state, f, indent=2, ensure_ascii=False)
 
-
-def handle_output(raw: str):
+# =========================
+# PARSER ROBUSTO (REAL)
+# =========================
+def parse_json(text: str):
     try:
-        return json.loads(raw)
+        # elimina code fences si existen
+        text = re.sub(r"```json|```", "", text)
+
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if not match:
+            return None
+
+        return json.loads(match.group(0))
+
     except Exception:
         return None
 
 
+# =========================
+# ASK WRAPPER
+# =========================
+async def ask(agent, prompt: str):
+
+    result = await agent.run(task=prompt)
+
+    raw = result.messages[-1].content
+
+    print("\n🧠 RAW:\n", raw)
+
+    data = parse_json(raw)
+
+    if not data:
+        print("\n⚠️ INVALID JSON\n")
+        return None
+
+    print(f"\n📦 {data.get('role')} | {data.get('type')}")
+    return data
+
+
+# =========================
+# MAIN LOOP
+# =========================
 async def main():
 
-    stream = team.run_stream(task=task)
+    state = load_state()
 
-    seen = set()
+    for i in range(state["number_of_iterations"]):
 
-    async for message in stream:
+        print("\n" + "=" * 60)
+        print(f"🔁 ITERATION {i+1}")
+        print("=" * 60)
 
-        raw = getattr(message, "content", None)
+        task = state["task"]
 
-        if not raw:
+        # =========================
+        # PM
+        # =========================
+        pm_result = await pm.run(
+            task=f"""
+        Objetivo: {state['task']}
+
+        Historial:
+        {json.dumps(state['history'][-3:], indent=2)}
+
+        Problemas detectados:
+        {state.get('last_error')}
+        """
+        )
+        pm_content = pm_result.messages[-1].content
+
+        pm_data = {
+            "role": "PM",
+            "type": "design",
+            "content": pm_content
+        }
+
+        if not pm_data:
+            print("⚠️ PM FAILED → regenerating task")
+            pm_data = {
+                "role": "Project Manager",
+                "type": "design",
+                "content": task
+            }
+
+        # =========================
+        # ARCHITECT
+        # =========================
+        architect_data = await ask(
+            architect,
+            f"""
+        Tarea:
+        {pm_data['content']}
+
+        IMPORTANTE:
+        Devuelve diseño estructurado con:
+        - archivos afectados
+        - funciones
+        - dependencias
+        - cambios concretos
+        """
+        )
+
+        if not architect_data:
             continue
 
-        print("\n🧠 RAW CONTENT:\n", raw)
+        # =========================
+        # DEVELOPER
+        # =========================
+        developer_data = await ask(
+            developer,
+            f"""
+                Tarea:
+                {pm_data['content']}
 
-        # ✅ SOLO UN PARSER
-        data = handle_output(raw)
+                Diseño:
+                {architect_data['content']}
 
-        if not data:
-            print("\n⚠️ SKIPPED NON-JSON MESSAGE")
+                Estado:
+                {json.dumps(state)}
+                """
+        )
+
+        if not developer_data:
             continue
 
-        role = data.get("role")
-        msg_type = data.get("type")
+        # =========================
+        # APPLY FILES
+        # =========================
+        if isinstance(developer_data.get("files"), list):
 
-        print(f"\n📦 ROLE: {role} | TYPE: {msg_type}\n")
+            print("\n⚙️ APPLYING FILES...\n")
 
-        # 🟢 APPLY SOLO DEVELOPER
-        if role == "Developer" and "files" in data:
-
-            print("\n⚙️ APPLYING FILE CHANGES...\n")
-
-            result = apply_dev_output(json.dumps(data))
+            result = apply_dev_output(json.dumps(developer_data))
 
             for r in result:
                 print(r)
 
-        # 🟢 QA DECIDE FINAL STATE
-        if role == "QA" and data.get("status") == "ok":
-            print("\n🎉 PROJECT COMPLETED SUCCESSFULLY")
+        # =========================
+        # QA
+        # =========================
+        qa_data = await ask(
+            qa,
+            f"""
+            Tarea:
+            {task}
+
+            Resultado:
+            {json.dumps(developer_data)}
+            """
+        )
+
+        # =========================
+        # UPDATE STATE
+        # =========================
+
+        state["last_error"] = None
+
+        if qa_data and qa_data.get("status") != "ok":
+            state["last_error"] = qa_data.get("content")
+
+
+        state["history"].append({
+            "pm": pm_data,
+            "architect": architect_data,
+            "developer": developer_data,
+            "qa": qa_data
+        })
+
+        if qa_data and qa_data.get("status") == "ok":
+            state["status"] = "done"
+            save_state(state)
+            print("\n🎉 PROJECT COMPLETED")
             return
+
+        save_state(state)
+        print("💾 STATE SAVED → continuing")
 
 
 if __name__ == "__main__":

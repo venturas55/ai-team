@@ -1,14 +1,16 @@
 import os
 
-BASE = "workspace"
-
-
+BASE = os.path.abspath(os.path.join(os.getcwd(), "workspace"))
+print("WORKSPACE REAL:", os.path.abspath(BASE))
 def safe(path):
+    # normaliza
+    path = path.replace("\\", "/")
     full = os.path.abspath(os.path.join(BASE, path))
-    base = os.path.abspath(BASE)
+
+    base = BASE
 
     if not full.startswith(base):
-        raise Exception("Fuera de workspace")
+        raise Exception(f"Fuera de workspace: {path}")
 
     return full
 
@@ -20,9 +22,10 @@ def read_file(path):
 
 def write_file(path, content):
     p = safe(path)
+
     os.makedirs(os.path.dirname(p), exist_ok=True)
 
     with open(p, "w", encoding="utf-8") as f:
         f.write(content)
 
-    return f"OK {path}"
+    return f"OK {p}"

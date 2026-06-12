@@ -236,3 +236,8 @@ Para proyectos como los que has comentado (Vue, Node, Express, Chart.js), esta c
 
 EJECUTAR:
 .\venv\Scripts\python.exe main.py
+
+or:
+
+Activalo: .\venv\Scripts\Activate
+ejecuta:     python main.py
